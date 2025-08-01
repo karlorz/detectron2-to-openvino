@@ -533,6 +533,8 @@ def main():
                        default='yolo_nas_m', help='Model size (default: yolo_nas_m)')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
     parser.add_argument('--threshold', '-t', type=float, default=0.5, help='Confidence threshold (default: 0.5)')
+    parser.add_argument('--source', '-s', type=str, default='0', 
+                       help='Video source: 0 for webcam, URL for stream, path for video file (default: 0)')
     
     # Check for environment variables
     debug_env = os.getenv('YOLO_DEBUG', '').lower() in ('1', 'true', 'on')
@@ -553,6 +555,7 @@ def main():
     
     print(f"Model: {args.model}")
     print(f"Confidence threshold: {threshold}")
+    print(f"Video source: {args.source}")
     print(f"Initializing detector...")
     
     detector = YOLONASOpenVINODetector(args.model, debug=debug)
@@ -582,21 +585,48 @@ def main():
         except Exception as e:
             print(f"Error testing with static image: {e}")
     
-    # Initialize webcam
-    print("Initializing webcam...")
-    cap = cv2.VideoCapture(0)
+    # Initialize video source
+    def parse_source(source_str):
+        """Parse video source string to appropriate format for cv2.VideoCapture"""
+        # Try to convert to integer (for webcam index)
+        try:
+            return int(source_str)
+        except ValueError:
+            # Return as string (URL or file path)
+            return source_str
+    
+    video_source = parse_source(args.source)
+    
+    # Determine source type for user feedback
+    if isinstance(video_source, int):
+        print(f"Initializing webcam (camera {video_source})...")
+        source_type = "webcam"
+    elif video_source.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
+        print(f"Connecting to stream: {video_source}")
+        source_type = "stream"
+    else:
+        print(f"Opening video file: {video_source}")
+        source_type = "file"
+    
+    cap = cv2.VideoCapture(video_source)
     
     if not cap.isOpened():
-        print("❌ Error: Could not open webcam")
-        print("Make sure your webcam is connected and not being used by another application")
+        print(f"❌ Error: Could not open {source_type}")
+        if source_type == "webcam":
+            print("Make sure your webcam is connected and not being used by another application")
+        elif source_type == "stream":
+            print("Check the stream URL and your internet connection")
+        else:
+            print("Check if the video file exists and is in a supported format")
         return
     
-    # Set webcam properties for better performance
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
+    # Set properties for better performance (mainly for webcams)
+    if source_type == "webcam":
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
     
-    print("✅ Webcam initialized successfully!")
+    print(f"✅ {source_type.capitalize()} initialized successfully!")
     print("Starting real-time detection...")
     print("Press 'q' to quit, 'p' to pause/resume")
     
@@ -610,7 +640,7 @@ def main():
             ret, frame = cap.read()
             if not ret:
                 if debug:
-                    print("Warning: Could not read frame from webcam")
+                    print(f"Warning: Could not read frame from {source_type}")
                 continue
             
             key = cv2.waitKey(1) & 0xFF
