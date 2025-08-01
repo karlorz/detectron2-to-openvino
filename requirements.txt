@@ -1,0 +1,6 @@
+opencv-python>=4.8.0
+numpy>=1.21.0
+requests>=2.28.0
+openvino>=2023.0.0
+huggingface-hub>=0.16.0
+Pillow>=9.0.0
