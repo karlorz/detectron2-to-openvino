@@ -40,28 +40,41 @@ class YOLONASOpenVINODetector:
         self.compiled_model = None
         self.core = ov.Core()
         
-        # COCO class names (80 classes)
-        # self.class_names = [
-        #     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
-        #     'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
-        #     'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
-        #     'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-        #     'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
-        #     'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
-        #     'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-        #     'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-        #     'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-        #     'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-        #     'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-        #     'toothbrush'
-        # ]
-        self.class_names = [
+        # Full COCO class names (80 classes) - model outputs these IDs
+        self.all_class_names = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
+            'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
+            'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
+            'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+            'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+            'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
+            'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+            'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+            'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
+            'toothbrush'
+        ]
+        
+        # Classes you want to detect (filter)
+        self.wanted_classes = [
             'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck'
         ]
         
-        # Generate colors for each class
+        # Create mapping from class ID to class name and filter set
+        self.wanted_class_ids = set()
+        for class_name in self.wanted_classes:
+            if class_name in self.all_class_names:
+                class_id = self.all_class_names.index(class_name)
+                self.wanted_class_ids.add(class_id)
+        
+        if debug:
+            print(f"Filtering to detect only: {self.wanted_classes}")
+            print(f"Class IDs to detect: {sorted(self.wanted_class_ids)}")
+        
+        # Generate colors for each class (use full set for consistent colors)
         np.random.seed(42)  # For consistent colors
-        self.colors = np.random.uniform(0, 255, size=(len(self.class_names), 3))
+        self.colors = np.random.uniform(0, 255, size=(len(self.all_class_names), 3))
         
         # Model URLs for downloading YOLO-NAS ONNX models
         self.model_urls = {
@@ -388,10 +401,20 @@ class YOLONASOpenVINODetector:
         if valid_count == 0:
             return detections
         
-        # Filter predictions
+        # Filter predictions by confidence and wanted classes
         boxes = boxes[valid_mask]
         scores = scores[valid_mask]
         class_ids = class_ids[valid_mask]
+        
+        # Further filter by wanted classes only
+        class_filter_mask = np.array([int(class_id) in self.wanted_class_ids for class_id in class_ids])
+        
+        if not np.any(class_filter_mask):
+            return detections
+            
+        boxes = boxes[class_filter_mask]
+        scores = scores[class_filter_mask]
+        class_ids = class_ids[class_filter_mask]
         
         # Scale boxes back to original image size (simple scaling without letterbox)
         img_h, img_w = original_shape
@@ -441,11 +464,11 @@ class YOLONASOpenVINODetector:
                     w = max(1, min(int(w), img_w - x))
                     h = max(1, min(int(h), img_h - y))
                     
-                    # Ensure class_id is within bounds
-                    if 0 <= class_id < len(self.class_names):
+                    # Ensure class_id is within bounds and is a wanted class
+                    if 0 <= class_id < len(self.all_class_names) and class_id in self.wanted_class_ids:
                         detections.append({
                             'class_id': int(class_id),
-                            'class_name': self.class_names[int(class_id)],
+                            'class_name': self.all_class_names[int(class_id)],
                             'confidence': float(confidence),
                             'bbox': [x, y, w, h]
                         })
@@ -464,10 +487,10 @@ class YOLONASOpenVINODetector:
                 w = max(1, min(int(w), img_w - x))
                 h = max(1, min(int(h), img_h - y))
                 
-                if 0 <= class_id < len(self.class_names):
+                if 0 <= class_id < len(self.all_class_names) and class_id in self.wanted_class_ids:
                     detections.append({
                         'class_id': int(class_id),
-                        'class_name': self.class_names[int(class_id)],
+                        'class_name': self.all_class_names[int(class_id)],
                         'confidence': float(confidence),
                         'bbox': [x, y, w, h]
                     })
@@ -535,6 +558,10 @@ def main():
     parser.add_argument('--threshold', '-t', type=float, default=0.5, help='Confidence threshold (default: 0.5)')
     parser.add_argument('--source', '-s', type=str, default='0', 
                        help='Video source: 0 for webcam, URL for stream, path for video file (default: 0)')
+    parser.add_argument('--skip-frames', type=int, default=2, 
+                       help='Skip every N frames for streams (default: 2, higher = better FPS)')
+    parser.add_argument('--buffer-size', type=int, default=1, 
+                       help='Video capture buffer size (default: 1, lower = less delay)')
     
     # Check for environment variables
     debug_env = os.getenv('YOLO_DEBUG', '').lower() in ('1', 'true', 'on')
@@ -620,11 +647,18 @@ def main():
             print("Check if the video file exists and is in a supported format")
         return
     
-    # Set properties for better performance (mainly for webcams)
+    # Optimize settings based on source type
     if source_type == "webcam":
+        # Webcam optimizations
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
+    elif source_type == "stream":
+        # RTSP/Stream optimizations
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, args.buffer_size)  # Reduce buffer to minimize delay
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        print(f"Stream optimizations: buffer_size={args.buffer_size}, skip_frames={args.skip_frames}")
     
     print(f"✅ {source_type.capitalize()} initialized successfully!")
     print("Starting real-time detection...")
@@ -634,14 +668,33 @@ def main():
     start_time = time.time()
     last_fps_time = start_time
     paused = False
+    frame_skip_count = 0
+    last_detection_time = start_time
+    
+    # Stream optimization settings
+    if source_type == "stream":
+        FRAME_SKIP_INTERVAL = args.skip_frames  # Process every Nth frame for streams
+        MAX_DETECTION_INTERVAL = 0.3  # Force detection at least every 300ms
+    else:
+        FRAME_SKIP_INTERVAL = 1  # Process all frames for webcam/files
+        MAX_DETECTION_INTERVAL = 0
     
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                if debug:
-                    print(f"Warning: Could not read frame from {source_type}")
-                continue
+                if source_type == "stream":
+                    # For streams, try to reconnect or skip bad frames
+                    if debug:
+                        print(f"Stream read failed, attempting to recover...")
+                    # Clear buffer and try next frame
+                    for _ in range(3):  # Skip a few frames to clear buffer
+                        cap.read()
+                    continue
+                else:
+                    if debug:
+                        print(f"Warning: Could not read frame from {source_type}")
+                    continue
             
             key = cv2.waitKey(1) & 0xFF
             
@@ -657,8 +710,26 @@ def main():
                 cv2.imshow('YOLO-NAS OpenVINO Object Detection', frame)
                 continue
             
-            # Run detection
-            detections = detector.detect(frame)
+            # Frame skipping logic for streams
+            current_time = time.time()
+            frame_skip_count += 1
+            should_detect = False
+            
+            if source_type == "stream":
+                # Skip frames for better performance, but ensure minimum detection rate
+                if (frame_skip_count % FRAME_SKIP_INTERVAL == 0 or 
+                    current_time - last_detection_time > MAX_DETECTION_INTERVAL):
+                    should_detect = True
+                    last_detection_time = current_time
+            else:
+                # Process all frames for webcam/files
+                should_detect = True
+            
+            # Run detection only when needed
+            if should_detect:
+                detections = detector.detect(frame)
+            else:
+                detections = []  # Use empty list for skipped frames
             
             # Log detections (clean output for performance monitoring)
             if detections:
