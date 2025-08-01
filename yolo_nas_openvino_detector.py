@@ -56,52 +56,107 @@ class YOLONASOpenVINODetector:
         np.random.seed(42)  # For consistent colors
         self.colors = np.random.uniform(0, 255, size=(len(self.class_names), 3))
         
-        # Model URLs for downloading from Hugging Face
+        # Model URLs for downloading YOLO-NAS ONNX models
         self.model_urls = {
-            "yolo_nas_s": "https://huggingface.co/Deci/super-gradients-yolo-nas-s/resolve/main/yolo_nas_s.onnx",
-            "yolo_nas_m": "https://huggingface.co/Deci/super-gradients-yolo-nas-m/resolve/main/yolo_nas_m.onnx", 
-            "yolo_nas_l": "https://huggingface.co/Deci/super-gradients-yolo-nas-l/resolve/main/yolo_nas_l.onnx"
+            "yolo_nas_s": "https://huggingface.co/hr16/yolo-nas-fp16/resolve/main/yolo_nas_s_fp16.onnx",
+            "yolo_nas_m": "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolo_nas_m.onnx",
+            "yolo_nas_l": "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolo_nas_l.onnx"
         }
+        
+        # Alternative: Generate models using super-gradients if URLs fail
+        self.use_super_gradients_fallback = True
+
+    def generate_onnx_with_super_gradients(self) -> bool:
+        """Generate ONNX model using super-gradients library"""
+        onnx_path = self.model_dir / f"{self.model_size}.onnx"
+        
+        try:
+            print(f"Attempting to generate {self.model_size} model using super-gradients...")
+            from super_gradients.training import models
+            
+            # Load pre-trained model
+            model = models.get(self.model_size, pretrained_weights="coco")
+            model.eval()
+            
+            # Create dummy input
+            dummy_input = torch.randn(1, 3, 640, 640)
+            
+            print(f"Exporting model to ONNX format...")
+            torch.onnx.export(
+                model,
+                dummy_input,
+                str(onnx_path),
+                export_params=True,
+                opset_version=11,
+                do_constant_folding=True,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={
+                    'input': {0: 'batch_size'},
+                    'output': {0: 'batch_size'}
+                }
+            )
+            
+            print(f"Model generated successfully: {onnx_path}")
+            return True
+            
+        except ImportError:
+            print("super-gradients not installed. Install with:")
+            print("uv add super-gradients")
+            return False
+        except Exception as e:
+            print(f"Error generating model with super-gradients: {e}")
+            if onnx_path.exists():
+                onnx_path.unlink()
+            return False
 
     def download_onnx_model(self) -> bool:
-        """Download ONNX model from Hugging Face if not available locally"""
+        """Download ONNX model or generate it locally if download fails"""
         onnx_path = self.model_dir / f"{self.model_size}.onnx"
         
         if onnx_path.exists() and onnx_path.stat().st_size > 0:
             print(f"ONNX model {onnx_path} already exists locally")
             return True
-            
-        if self.model_size not in self.model_urls:
-            print(f"Unknown model size: {self.model_size}")
-            return False
-            
-        url = self.model_urls[self.model_size]
-        print(f"Downloading ONNX model from: {url}")
         
-        try:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
+        # Try downloading first
+        if self.model_size in self.model_urls:
+            url = self.model_urls[self.model_size]
+            print(f"Downloading ONNX model from: {url}")
             
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            with open(onnx_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            progress = (downloaded / total_size) * 100
-                            print(f"\rDownload progress: {progress:.1f}%", end='', flush=True)
-            
-            print(f"\nModel downloaded successfully to {onnx_path}")
-            return True
-            
-        except Exception as e:
-            print(f"Error downloading model: {e}")
-            if onnx_path.exists():
-                onnx_path.unlink()  # Remove incomplete file
-            return False
+            try:
+                # Add headers to avoid 401 errors
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                response = requests.get(url, stream=True, headers=headers, timeout=30)
+                response.raise_for_status()
+                
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(onnx_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                progress = (downloaded / total_size) * 100
+                                print(f"\rDownload progress: {progress:.1f}%", end='', flush=True)
+                
+                print(f"\nModel downloaded successfully to {onnx_path}")
+                return True
+                
+            except Exception as e:
+                print(f"Download failed: {e}")
+                if onnx_path.exists():
+                    onnx_path.unlink()  # Remove incomplete file
+        
+        # Fallback to super-gradients generation
+        if self.use_super_gradients_fallback:
+            print("Falling back to local model generation...")
+            return self.generate_onnx_with_super_gradients()
+        
+        return False
 
     def convert_onnx_to_openvino(self) -> bool:
         """Convert ONNX model to OpenVINO format"""
@@ -433,7 +488,12 @@ def main():
     # Load model (auto-detects best device)
     print("Loading model...")
     if not detector.load_or_convert_model():
-        print("❌ Failed to load model. Please check your internet connection and try again.")
+        print("❌ Failed to load model.")
+        print("")
+        print("📋 To fix this, install super-gradients:")
+        print("   uv add super-gradients")
+        print("")
+        print("This will allow the script to generate YOLO-NAS models locally.")
         return
     
     # Test with static image first (if available)
