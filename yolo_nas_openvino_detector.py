@@ -12,23 +12,27 @@ from pathlib import Path
 import time
 import requests
 import os
+import sys
+import argparse
 from typing import List, Dict, Tuple
 import warnings
 import platform
 
 class YOLONASOpenVINODetector:
-    def __init__(self, model_size: str = "yolo_nas_m"):
+    def __init__(self, model_size: str = "yolo_nas_m", debug: bool = False):
         """
         Initialize YOLO-NAS OpenVINO detector
         
         Args:
             model_size: One of 'yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'
+            debug: Enable debug output
         """
         self.model_size = model_size
         self.model_dir = Path("models")
         self.model_dir.mkdir(exist_ok=True)
+        self.debug = debug
         
-        self.confidence_threshold = 0.1  # Temporarily lower for debugging
+        self.confidence_threshold = 0.3  # Reasonable threshold for real use
         self.nms_threshold = 0.4
         self.input_size = (640, 640)
         
@@ -279,12 +283,13 @@ class YOLONASOpenVINODetector:
             self.compiled_model = self.core.compile_model(self.ov_model, device)
             
             # Debug: Print model input/output info
-            print("Model input information:")
-            for input_layer in self.ov_model.inputs:
-                print(f"  Input: {input_layer.any_name}, shape: {input_layer.shape}, type: {input_layer.element_type}")
-            print("Model output information:")
-            for output_layer in self.ov_model.outputs:
-                print(f"  Output: {output_layer.any_name}, shape: {output_layer.shape}, type: {output_layer.element_type}")
+            if self.debug:
+                print("Model input information:")
+                for input_layer in self.ov_model.inputs:
+                    print(f"  Input: {input_layer.any_name}, shape: {input_layer.shape}, type: {input_layer.element_type}")
+                print("Model output information:")
+                for output_layer in self.ov_model.outputs:
+                    print(f"  Output: {output_layer.any_name}, shape: {output_layer.shape}, type: {output_layer.element_type}")
             
             print("Model loaded and compiled successfully!")
             return True
@@ -302,45 +307,25 @@ class YOLONASOpenVINODetector:
 
     def preprocess_image(self, image: np.ndarray) -> np.ndarray:
         """Preprocess image for YOLO-NAS inference"""
-        # Debug: Print input image info (only first few times)
-        if self._preprocessing_attempts <= 3:
-            print(f"Input image shape: {image.shape}, dtype: {image.dtype}, range: {image.min()}-{image.max()}")
-        
-        # Simple resize without letterbox - test if this works better
+        # Simple resize without letterbox
         resized = cv2.resize(image, self.input_size, interpolation=cv2.INTER_LINEAR)
         
-        # Convert BGR to RGB first (OpenCV uses BGR, models expect RGB)
+        # Convert BGR to RGB (OpenCV uses BGR, models expect RGB)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         
-        # Convert to float32
-        normalized = rgb.astype(np.float32)
+        # Convert to float32 and apply ImageNet normalization (works best for this model)
+        normalized = rgb.astype(np.float32) / 255.0
         
-        # Try different normalizations based on attempt number
-        if self._preprocessing_attempts == 1:
-            # Attempt 1: [0, 255] range
-            print("Trying [0, 255] normalization")
-            pass  # Keep original [0, 255] range
-        elif self._preprocessing_attempts == 2:
-            # Attempt 2: [0, 1] range  
-            print("Trying [0, 1] normalization")
-            normalized = normalized / 255.0
-        else:
-            # Attempt 3+: ImageNet normalization
-            print("Trying ImageNet normalization")
-            normalized = normalized / 255.0
-            # ImageNet normalization
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            normalized = (normalized - mean) / std
+        # ImageNet normalization
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        normalized = (normalized - mean) / std
         
         # Convert HWC to CHW format
         transposed = np.transpose(normalized, (2, 0, 1))
         
         # Add batch dimension
         batched = np.expand_dims(transposed, axis=0)
-        
-        if self._preprocessing_attempts <= 3:
-            print(f"Preprocessed tensor shape: {batched.shape}, dtype: {batched.dtype}, range: {batched.min():.3f}-{batched.max():.3f}")
         
         return batched
 
@@ -364,11 +349,12 @@ class YOLONASOpenVINODetector:
             scores = outputs[2][0]  # Remove batch dimension: (1000,)
             class_ids = outputs[3][0]  # Remove batch dimension: (1000,)
             
-            print(f"Number of predictions: {num_predictions}")
-            print(f"Boxes shape: {boxes.shape}")
-            print(f"Scores shape: {scores.shape}")
-            print(f"Classes shape: {class_ids.shape}")
-            print(f"Score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
+            if self.debug:
+                print(f"Number of predictions: {num_predictions}")
+                print(f"Boxes shape: {boxes.shape}")
+                print(f"Scores shape: {scores.shape}")
+                print(f"Classes shape: {class_ids.shape}")
+                print(f"Score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
             
             # Use only the valid predictions (first num_predictions)
             if num_predictions > 0:
@@ -377,10 +363,12 @@ class YOLONASOpenVINODetector:
                 scores = scores[:num_pred]
                 class_ids = class_ids[:num_pred]
                 
-                print(f"Using first {num_pred} predictions")
-                print(f"Filtered score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
+                if self.debug:
+                    print(f"Using first {num_pred} predictions")
+                    print(f"Filtered score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
             else:
-                print("No valid predictions from model")
+                if self.debug:
+                    print("No valid predictions from model")
                 return detections
                 
         except Exception as e:
@@ -391,10 +379,10 @@ class YOLONASOpenVINODetector:
         valid_mask = scores >= self.confidence_threshold
         valid_count = np.sum(valid_mask)
         
-        print(f"Valid detections: {valid_count} out of {len(scores)} (threshold: {self.confidence_threshold})")
+        if self.debug:
+            print(f"Valid detections: {valid_count} out of {len(scores)} (threshold: {self.confidence_threshold})")
         
         if valid_count == 0:
-            print("No detections above confidence threshold")
             return detections
         
         # Filter predictions
@@ -488,16 +476,6 @@ class YOLONASOpenVINODetector:
         if self.compiled_model is None:
             return []
         
-        # Try different preprocessing approaches if getting zero scores
-        if not hasattr(self, '_preprocessing_attempts'):
-            self._preprocessing_attempts = 0
-        
-        self._preprocessing_attempts += 1
-        
-        # Try different normalizations on first few frames
-        if self._preprocessing_attempts <= 3:
-            print(f"Attempting preprocessing approach {self._preprocessing_attempts}")
-        
         # Preprocess image
         input_tensor = self.preprocess_image(image)
         
@@ -546,19 +524,34 @@ class YOLONASOpenVINODetector:
 
 def main():
     """Main function to run webcam detection demo"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='YOLO-NAS OpenVINO Object Detector')
+    parser.add_argument('--model', '-m', choices=['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'], 
+                       default='yolo_nas_s', help='Model size (default: yolo_nas_s for better FPS)')
+    parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
+    parser.add_argument('--threshold', '-t', type=float, default=0.3, help='Confidence threshold (default: 0.3)')
+    
+    # Check for environment variable debug flag
+    debug_env = os.getenv('YOLO_DEBUG', '').lower() in ('1', 'true', 'on')
+    
+    args = parser.parse_args()
+    debug = args.debug or debug_env
+    
     print("=" * 60)
     print("YOLO-NAS OpenVINO Object Detector")
     print("=" * 60)
     
-    # Initialize detector (change model size as needed)
-    # Options: "yolo_nas_s" (fastest), "yolo_nas_m" (balanced), "yolo_nas_l" (most accurate)
-    model_size = "yolo_nas_m"
-    print(f"Initializing detector with {model_size} model...")
+    if debug:
+        print(f"Debug mode: ON")
     
-    detector = YOLONASOpenVINODetector(model_size)
+    print(f"Model: {args.model}")
+    print(f"Confidence threshold: {args.threshold}")
+    print(f"Initializing detector...")
+    
+    detector = YOLONASOpenVINODetector(args.model, debug=debug)
+    detector.confidence_threshold = args.threshold
     
     # Load model (auto-detects best device)
-    print("Loading model...")
     if not detector.load_or_convert_model():
         print("❌ Failed to load model.")
         print("")
@@ -602,13 +595,15 @@ def main():
     
     fps_counter = 0
     start_time = time.time()
+    last_fps_time = start_time
     paused = False
     
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("Warning: Could not read frame from webcam")
+                if debug:
+                    print("Warning: Could not read frame from webcam")
                 continue
             
             key = cv2.waitKey(1) & 0xFF
@@ -628,18 +623,31 @@ def main():
             # Run detection
             detections = detector.detect(frame)
             
+            # Log detections (clean output for performance monitoring)
+            if detections:
+                current_time = time.time()
+                current_fps = fps_counter / (current_time - start_time) if fps_counter > 0 else 0
+                
+                detection_summary = {}
+                for det in detections:
+                    class_name = det['class_name']
+                    if class_name in detection_summary:
+                        detection_summary[class_name] += 1
+                    else:
+                        detection_summary[class_name] = 1
+                
+                objects_str = ", ".join([f"{count}x {name}" for name, count in detection_summary.items()])
+                print(f"FPS: {current_fps:.1f} | Detected: {objects_str}")
+            
             # Draw results
             result_frame = detector.draw_detections(frame, detections)
             
-            # Add FPS and detection count to frame
+            # Update FPS counter
             fps_counter += 1
-            if fps_counter % 30 == 0:
-                elapsed_time = time.time() - start_time
-                current_fps = fps_counter / elapsed_time
-                print(f"FPS: {current_fps:.1f} | Detections: {len(detections)}")
             
             # Add info text to frame
-            info_text = f"FPS: {fps_counter/(time.time() - start_time):.1f} | Objects: {len(detections)}"
+            current_fps = fps_counter / (time.time() - start_time) if fps_counter > 0 else 0
+            info_text = f"FPS: {current_fps:.1f} | Objects: {len(detections)}"
             cv2.putText(result_frame, info_text, (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
