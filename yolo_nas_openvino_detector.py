@@ -41,19 +41,22 @@ class YOLONASOpenVINODetector:
         self.core = ov.Core()
         
         # COCO class names (80 classes)
+        # self.class_names = [
+        #     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
+        #     'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
+        #     'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
+        #     'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+        #     'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+        #     'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
+        #     'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+        #     'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+        #     'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+        #     'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+        #     'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
+        #     'toothbrush'
+        # ]
         self.class_names = [
-            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
-            'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
-            'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
-            'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-            'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
-            'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
-            'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-            'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-            'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-            'toothbrush'
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck'
         ]
         
         # Generate colors for each class
@@ -529,13 +532,17 @@ def main():
     parser.add_argument('--model', '-m', choices=['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'], 
                        default='yolo_nas_s', help='Model size (default: yolo_nas_s for better FPS)')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
-    parser.add_argument('--threshold', '-t', type=float, default=0.3, help='Confidence threshold (default: 0.3)')
+    parser.add_argument('--threshold', '-t', type=float, default=0.5, help='Confidence threshold (default: 0.5)')
     
-    # Check for environment variable debug flag
+    # Check for environment variables
     debug_env = os.getenv('YOLO_DEBUG', '').lower() in ('1', 'true', 'on')
+    threshold_env = float(os.getenv('YOLO_THRESHOLD', '0.5'))
     
     args = parser.parse_args()
     debug = args.debug or debug_env
+    
+    # Use command line threshold, or environment variable, or default
+    threshold = args.threshold if args.threshold != 0.5 else threshold_env
     
     print("=" * 60)
     print("YOLO-NAS OpenVINO Object Detector")
@@ -545,11 +552,11 @@ def main():
         print(f"Debug mode: ON")
     
     print(f"Model: {args.model}")
-    print(f"Confidence threshold: {args.threshold}")
+    print(f"Confidence threshold: {threshold}")
     print(f"Initializing detector...")
     
     detector = YOLONASOpenVINODetector(args.model, debug=debug)
-    detector.confidence_threshold = args.threshold
+    detector.confidence_threshold = threshold
     
     # Load model (auto-detects best device)
     if not detector.load_or_convert_model():
