@@ -39,45 +39,63 @@ class YOLONASDetector:
         
         self.colors = np.random.uniform(0, 255, size=(len(self.class_names), 3))
         
-    def download_model_from_hf(self, model_name: str = "yolo_nas_s") -> str:
+    def download_model_from_hf(self, model_name: str = "yolo_nas_m") -> str:
         """Download YOLO-NAS model from Hugging Face if not available locally."""
         model_dir = Path("models")
         model_dir.mkdir(exist_ok=True)
         
         model_file = model_dir / f"{model_name}.onnx"
         
-        if model_file.exists():
+        if model_file.exists() and model_file.stat().st_size > 0:
             print(f"Model {model_file} already exists locally.")
             return str(model_file)
+        elif model_file.exists():
+            print(f"Model {model_file} exists but is empty, re-downloading...")
+            model_file.unlink()  # Delete empty file
         
         print(f"Downloading {model_name} from Hugging Face...")
         
-        # Example URLs - replace with actual Hugging Face model URLs
+        # Alternative YOLO-NAS ONNX model URLs - you may need to generate these yourself
+        # using super-gradients library: model.export("model.onnx")
         model_urls = {
-            "yolo_nas_s": "https://huggingface.co/Deci/yolo-nas-s/resolve/main/yolo_nas_s.onnx",
-            "yolo_nas_m": "https://huggingface.co/Deci/yolo-nas-m/resolve/main/yolo_nas_m.onnx",
-            "yolo_nas_l": "https://huggingface.co/Deci/yolo-nas-l/resolve/main/yolo_nas_l.onnx"
+            "yolo_nas_s": "https://huggingface.co/spaces/Deci/YOLO-NAS/resolve/main/yolo_nas_s.onnx",
+            "yolo_nas_m": "https://huggingface.co/spaces/Deci/YOLO-NAS/resolve/main/yolo_nas_m.onnx", 
+            "yolo_nas_l": "https://huggingface.co/spaces/Deci/YOLO-NAS/resolve/main/yolo_nas_l.onnx"
         }
         
         if model_name not in model_urls:
             raise ValueError(f"Model {model_name} not supported. Available: {list(model_urls.keys())}")
         
         try:
+            print(f"Downloading from: {model_urls[model_name]}")
             response = requests.get(model_urls[model_name], stream=True)
             response.raise_for_status()
             
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
             with open(model_file, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rDownloading... {percent:.1f}%", end='', flush=True)
             
-            print(f"Model downloaded successfully: {model_file}")
+            print(f"\nModel downloaded successfully: {model_file} ({downloaded} bytes)")
+            
+            # Verify file was downloaded properly
+            if model_file.stat().st_size == 0:
+                raise Exception("Downloaded file is empty")
+                
             return str(model_file)
             
         except Exception as e:
-            print(f"Error downloading model: {e}")
-            # Fallback: create a dummy model file for demo
-            print("Creating dummy model for demo purposes...")
-            model_file.touch()
+            print(f"\nError downloading model: {e}")
+            print("The model URLs might be incorrect or the server is unavailable.")
+            print("For now, running in simulation mode...")
+            # Don't create empty file, just return the path
             return str(model_file)
     
     def load_model(self, model_path: str = None):
@@ -86,7 +104,7 @@ class YOLONASDetector:
             import openvino as ov
             
             if model_path is None:
-                model_path = self.download_model_from_hf()
+                model_path = self.download_model_from_hf("yolo_nas_m")
             
             # For demo purposes, we'll simulate model loading
             # In real implementation, uncomment the following lines:
@@ -129,25 +147,33 @@ class YOLONASDetector:
         
         detections = []
         
-        # Simulate some random detections for demo
-        num_detections = np.random.randint(0, 5)
-        
-        for _ in range(num_detections):
-            class_id = np.random.randint(0, len(self.class_names))
-            confidence = np.random.uniform(self.confidence_threshold, 1.0)
-            
-            # Random bounding box
-            x = np.random.randint(0, original_shape[1] - 100)
-            y = np.random.randint(0, original_shape[0] - 100)
-            w = np.random.randint(50, 200)
-            h = np.random.randint(50, 200)
-            
-            detections.append({
-                'class_id': class_id,
-                'class_name': self.class_names[class_id],
-                'confidence': confidence,
-                'bbox': [x, y, w, h]
-            })
+        # Simulate more realistic detections - focus on person detection
+        # Only generate detections occasionally to reduce flickering
+        if np.random.random() < 0.3:  # 30% chance of detection per frame
+            # Simulate person detection in center area
+            if np.random.random() < 0.8:  # 80% chance it's a person
+                class_id = 0  # person
+                confidence = np.random.uniform(0.7, 0.95)
+                
+                # More realistic bounding box for person in center
+                center_x = original_shape[1] // 2
+                center_y = original_shape[0] // 2
+                
+                x = center_x - np.random.randint(80, 120)
+                y = center_y - np.random.randint(100, 150)
+                w = np.random.randint(160, 240)
+                h = np.random.randint(200, 300)
+                
+                # Ensure bbox is within image bounds
+                x = max(0, min(x, original_shape[1] - w))
+                y = max(0, min(y, original_shape[0] - h))
+                
+                detections.append({
+                    'class_id': class_id,
+                    'class_name': self.class_names[class_id],
+                    'confidence': confidence,
+                    'bbox': [x, y, w, h]
+                })
         
         return detections
     
@@ -180,7 +206,7 @@ class YOLONASDetector:
             class_id = detection['class_id']
             
             # Draw bounding box
-            color = self.colors[class_id].astype(int)
+            color = tuple(self.colors[class_id].astype(int).tolist())
             cv2.rectangle(result_image, (x, y), (x + w, y + h), color, 2)
             
             # Draw label
@@ -197,8 +223,10 @@ class YOLONASDetector:
 def main():
     """Main function to run webcam detection demo."""
     print("Initializing YOLO-NAS Object Detector...")
+    print("Note: Currently running in simulation mode.")
+    print("To use real YOLO-NAS models, run: uv run generate_yolo_nas_onnx.py")
     
-    # Initialize detector
+    # Initialize detector with medium model
     detector = YOLONASDetector()
     detector.load_model()
     
@@ -221,6 +249,12 @@ def main():
         
         # Run detection
         detections = detector.detect(frame)
+        
+        # Print detections to console
+        if detections:
+            print(f"Frame {fps_counter}: Detected {len(detections)} objects:")
+            for det in detections:
+                print(f"  - {det['class_name']}: {det['confidence']:.2f} at {det['bbox']}")
         
         # Draw results
         result_frame = detector.draw_detections(frame, detections)
