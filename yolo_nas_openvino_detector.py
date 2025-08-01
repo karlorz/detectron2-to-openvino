@@ -277,6 +277,15 @@ class YOLONASOpenVINODetector:
         try:
             print(f"Compiling model for {device} device...")
             self.compiled_model = self.core.compile_model(self.ov_model, device)
+            
+            # Debug: Print model input/output info
+            print("Model input information:")
+            for input_layer in self.ov_model.inputs:
+                print(f"  Input: {input_layer.any_name}, shape: {input_layer.shape}, type: {input_layer.element_type}")
+            print("Model output information:")
+            for output_layer in self.ov_model.outputs:
+                print(f"  Output: {output_layer.any_name}, shape: {output_layer.shape}, type: {output_layer.element_type}")
+            
             print("Model loaded and compiled successfully!")
             return True
         except Exception as e:
@@ -293,48 +302,36 @@ class YOLONASOpenVINODetector:
 
     def preprocess_image(self, image: np.ndarray) -> np.ndarray:
         """Preprocess image for YOLO-NAS inference"""
-        # Debug: Print input image info
-        print(f"Input image shape: {image.shape}, dtype: {image.dtype}, range: {image.min()}-{image.max()}")
+        # Debug: Print input image info (only first few times)
+        if self._preprocessing_attempts <= 3:
+            print(f"Input image shape: {image.shape}, dtype: {image.dtype}, range: {image.min()}-{image.max()}")
         
-        # Resize image to model input size while maintaining aspect ratio
-        h, w = image.shape[:2]
-        target_h, target_w = self.input_size
-        
-        # Calculate scaling factor
-        scale = min(target_w / w, target_h / h)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        
-        # Resize image
-        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        
-        # Create padded image (letterbox)
-        padded = np.full((target_h, target_w, 3), 114, dtype=np.uint8)  # Fill with gray
-        
-        # Calculate padding offsets
-        pad_x = (target_w - new_w) // 2
-        pad_y = (target_h - new_h) // 2
-        
-        # Place resized image in center
-        padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+        # Simple resize without letterbox - test if this works better
+        resized = cv2.resize(image, self.input_size, interpolation=cv2.INTER_LINEAR)
         
         # Convert BGR to RGB first (OpenCV uses BGR, models expect RGB)
-        rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         
-        # Convert to float and normalize
-        # Try different normalizations - some YOLO-NAS models expect [0,1], others expect [0,255]
+        # Convert to float32
         normalized = rgb.astype(np.float32)
         
-        # Test with different normalizations
-        if hasattr(self, '_normalization_tested'):
-            # Use the normalization that worked
-            if self._use_255_norm:
-                pass  # Keep [0, 255] range
-            else:
-                normalized = normalized / 255.0  # Use [0, 1] range
-        else:
-            # Default: try [0, 1] first
+        # Try different normalizations based on attempt number
+        if self._preprocessing_attempts == 1:
+            # Attempt 1: [0, 255] range
+            print("Trying [0, 255] normalization")
+            pass  # Keep original [0, 255] range
+        elif self._preprocessing_attempts == 2:
+            # Attempt 2: [0, 1] range  
+            print("Trying [0, 1] normalization")
             normalized = normalized / 255.0
+        else:
+            # Attempt 3+: ImageNet normalization
+            print("Trying ImageNet normalization")
+            normalized = normalized / 255.0
+            # ImageNet normalization
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            normalized = (normalized - mean) / std
         
         # Convert HWC to CHW format
         transposed = np.transpose(normalized, (2, 0, 1))
@@ -342,7 +339,8 @@ class YOLONASOpenVINODetector:
         # Add batch dimension
         batched = np.expand_dims(transposed, axis=0)
         
-        print(f"Preprocessed tensor shape: {batched.shape}, dtype: {batched.dtype}, range: {batched.min():.3f}-{batched.max():.3f}")
+        if self._preprocessing_attempts <= 3:
+            print(f"Preprocessed tensor shape: {batched.shape}, dtype: {batched.dtype}, range: {batched.min():.3f}-{batched.max():.3f}")
         
         return batched
 
@@ -404,26 +402,17 @@ class YOLONASOpenVINODetector:
         scores = scores[valid_mask]
         class_ids = class_ids[valid_mask]
         
-        # Scale boxes back to original image size (accounting for letterbox padding)
+        # Scale boxes back to original image size (simple scaling without letterbox)
         img_h, img_w = original_shape
         target_h, target_w = self.input_size
         
-        # Calculate scaling factor used in preprocessing
-        scale = min(target_w / img_w, target_h / img_h)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
+        # Simple scaling factors
+        scale_x = img_w / target_w
+        scale_y = img_h / target_h
         
-        # Calculate padding offsets
-        pad_x = (target_w - new_w) // 2
-        pad_y = (target_h - new_h) // 2
-        
-        # Remove padding offset
-        boxes[:, [0, 2]] -= pad_x  # x coordinates
-        boxes[:, [1, 3]] -= pad_y  # y coordinates
-        
-        # Scale back to original image size
-        boxes[:, [0, 2]] /= scale  # x coordinates
-        boxes[:, [1, 3]] /= scale  # y coordinates
+        # Scale coordinates back to original image size
+        boxes[:, [0, 2]] *= scale_x  # x coordinates
+        boxes[:, [1, 3]] *= scale_y  # y coordinates
         
         # Convert to [x, y, w, h] format for NMS
         boxes_xywh = np.zeros_like(boxes)
@@ -498,6 +487,16 @@ class YOLONASOpenVINODetector:
         """Run object detection on an image"""
         if self.compiled_model is None:
             return []
+        
+        # Try different preprocessing approaches if getting zero scores
+        if not hasattr(self, '_preprocessing_attempts'):
+            self._preprocessing_attempts = 0
+        
+        self._preprocessing_attempts += 1
+        
+        # Try different normalizations on first few frames
+        if self._preprocessing_attempts <= 3:
+            print(f"Attempting preprocessing approach {self._preprocessing_attempts}")
         
         # Preprocess image
         input_tensor = self.preprocess_image(image)
