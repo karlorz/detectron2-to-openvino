@@ -425,7 +425,7 @@ class YOLONASOpenVINODetector:
         try:
             indices = cv2.dnn.NMSBoxes(
                 boxes_xywh.tolist(),
-                final_conf.tolist(),
+                scores.tolist(),
                 self.confidence_threshold,
                 self.nms_threshold
             )
@@ -441,7 +441,7 @@ class YOLONASOpenVINODetector:
                         i = i[0] if hasattr(i, '__len__') else i
                     
                     x, y, w, h = boxes_xywh[i]
-                    confidence = final_conf[i]
+                    confidence = scores[i]
                     class_id = class_ids[i]
                     
                     # Ensure coordinates are within bounds
@@ -462,10 +462,10 @@ class YOLONASOpenVINODetector:
         except Exception as e:
             print(f"Error in NMS: {e}")
             # Fallback: return top detections without NMS
-            top_indices = np.argsort(final_conf)[-10:]  # Top 10
+            top_indices = np.argsort(scores)[-10:]  # Top 10
             for i in top_indices:
                 x, y, w, h = boxes_xywh[i]
-                confidence = final_conf[i]
+                confidence = scores[i]
                 class_id = class_ids[i]
                 
                 x = max(0, min(int(x), img_w - 1))
