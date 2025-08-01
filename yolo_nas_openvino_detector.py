@@ -311,105 +311,58 @@ class YOLONASOpenVINODetector:
         """Post-process YOLO-NAS outputs to get final detections"""
         detections = []
         
-        if not outputs or len(outputs) == 0:
+        if not outputs or len(outputs) < 4:
+            print(f"Expected 4 outputs, got {len(outputs)}")
             return detections
         
-        # Debug: Print all output shapes to understand the format
-        print(f"All output shapes: {[out.shape for out in outputs]}")
+        # YOLO-NAS specific output format:
+        # Output 0: num_predictions (1,1) - number of valid predictions
+        # Output 1: pred_boxes (1,1000,4) - bounding boxes  
+        # Output 2: pred_scores (1,1000) - confidence scores
+        # Output 3: pred_classes (1,1000) - class IDs
         
-        # Find the main prediction output (largest tensor)
-        predictions = None
-        max_elements = 0
-        
-        for i, output in enumerate(outputs):
-            num_elements = np.prod(output.shape)
-            print(f"Output {i}: shape={output.shape}, elements={num_elements}")
-            if num_elements > max_elements:
-                max_elements = num_elements
-                predictions = output
-        
-        if predictions is None:
-            print("No valid prediction output found")
+        try:
+            num_predictions = outputs[0][0, 0]  # Extract scalar value
+            boxes = outputs[1][0]  # Remove batch dimension: (1000, 4)
+            scores = outputs[2][0]  # Remove batch dimension: (1000,)
+            class_ids = outputs[3][0]  # Remove batch dimension: (1000,)
+            
+            print(f"Number of predictions: {num_predictions}")
+            print(f"Boxes shape: {boxes.shape}")
+            print(f"Scores shape: {scores.shape}")
+            print(f"Classes shape: {class_ids.shape}")
+            print(f"Score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
+            
+            # Use only the valid predictions (first num_predictions)
+            if num_predictions > 0:
+                num_pred = min(int(num_predictions), len(boxes))
+                boxes = boxes[:num_pred]
+                scores = scores[:num_pred]
+                class_ids = class_ids[:num_pred]
+                
+                print(f"Using first {num_pred} predictions")
+                print(f"Filtered score range: {np.min(scores):.3f} - {np.max(scores):.3f}")
+            else:
+                print("No valid predictions from model")
+                return detections
+                
+        except Exception as e:
+            print(f"Error extracting outputs: {e}")
             return detections
         
-        print(f"Using predictions with shape: {predictions.shape}")
+        # Filter by confidence threshold
+        valid_mask = scores >= self.confidence_threshold
+        valid_count = np.sum(valid_mask)
         
-        # Handle different YOLO-NAS output formats
-        if len(predictions.shape) == 4:  # [batch, channels, height, width]
-            print("Detected 4D output - likely feature map format")
-            return detections
-        elif len(predictions.shape) == 3:  # [batch, num_detections, features]
-            if predictions.shape[0] == 1:
-                predictions = predictions[0]  # Remove batch dimension
-            print(f"After removing batch: {predictions.shape}")
-        elif len(predictions.shape) == 2:  # [num_detections, features]
-            print("Already 2D format")
-        else:
-            print(f"Unexpected prediction shape: {predictions.shape}")
-            return detections
+        print(f"Valid detections: {valid_count} out of {len(scores)} (threshold: {self.confidence_threshold})")
         
-        # Check if we have the expected format
-        if len(predictions.shape) != 2:
-            print(f"Final predictions shape not 2D: {predictions.shape}")
-            return detections
-        
-        num_detections, num_features = predictions.shape
-        print(f"Processing {num_detections} detections with {num_features} features each")
-        
-        # Handle different feature counts
-        if num_features < 5:
-            print(f"Too few features ({num_features}) for object detection")
-            return detections
-        elif num_features == 85:  # Standard YOLO format: 4 bbox + 1 conf + 80 classes
-            bbox_end = 4
-            conf_idx = 4
-            class_start = 5
-        elif num_features == 6:  # Simplified format: 4 bbox + 1 conf + 1 class
-            bbox_end = 4
-            conf_idx = 4
-            class_start = 5
-        else:
-            print(f"Unexpected number of features: {num_features}, trying standard format")
-            bbox_end = 4
-            conf_idx = 4
-            class_start = 5
-        
-        # Extract components based on detected format
-        boxes = predictions[:, :bbox_end]  # x1, y1, x2, y2
-        obj_conf = predictions[:, conf_idx]  # objectness confidence
-        
-        if class_start < num_features:
-            class_scores = predictions[:, class_start:]  # class scores
-            if class_scores.shape[1] > 1:  # Multiple classes
-                class_ids = np.argmax(class_scores, axis=1)
-                class_conf = np.max(class_scores, axis=1)
-            else:  # Single class or class ID
-                class_ids = np.zeros(len(predictions), dtype=int)  # Default to class 0 (person)
-                class_conf = np.ones(len(predictions))  # Full confidence
-        else:
-            # No class information, default to person class
-            class_ids = np.zeros(len(predictions), dtype=int)
-            class_conf = np.ones(len(predictions))
-        
-        # Final confidence = objectness * class confidence
-        final_conf = obj_conf * class_conf
-        
-        print(f"Confidence range: {np.min(final_conf):.3f} - {np.max(final_conf):.3f}")
-        print(f"Boxes shape: {boxes.shape}, sample box: {boxes[0] if len(boxes) > 0 else 'none'}")
-        
-        # Filter by confidence threshold (temporarily lower for debugging)
-        debug_threshold = min(self.confidence_threshold, 0.1)  # Use lower threshold for debugging
-        valid_mask = final_conf >= debug_threshold
-        
-        print(f"Valid detections: {np.sum(valid_mask)} out of {len(final_conf)} (threshold: {debug_threshold})")
-        
-        if not np.any(valid_mask):
-            print("No detections above threshold")
+        if valid_count == 0:
+            print("No detections above confidence threshold")
             return detections
         
         # Filter predictions
         boxes = boxes[valid_mask]
-        final_conf = final_conf[valid_mask]
+        scores = scores[valid_mask]
         class_ids = class_ids[valid_mask]
         
         # Scale boxes to original image size
@@ -500,12 +453,15 @@ class YOLONASOpenVINODetector:
         # Run inference
         outputs = self.compiled_model(input_tensor)
         
-        # Debug: Print output information
-        print(f"Model outputs keys: {list(outputs.keys())}")
+        # Convert outputs to list in correct order
         output_arrays = []
-        for i, (key, output) in enumerate(outputs.items()):
-            print(f"Output {i} ({key}): shape={output.shape}, dtype={output.dtype}")
-            output_arrays.append(output)
+        output_keys = list(outputs.keys())
+        
+        # Sort outputs by name to ensure consistent order
+        # Expected order: num_predictions, pred_boxes, pred_scores, pred_classes
+        sorted_keys = sorted(output_keys)
+        for key in sorted_keys:
+            output_arrays.append(outputs[key])
         
         # Post-process outputs
         detections = self.postprocess_detections(output_arrays, image.shape[:2])
