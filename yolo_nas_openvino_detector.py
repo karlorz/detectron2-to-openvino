@@ -553,7 +553,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='YOLO-NAS OpenVINO Object Detector')
     parser.add_argument('--model', '-m', choices=['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'], 
-                       default='yolo_nas_m', help='Model size (default: yolo_nas_m)')
+                       default='yolo_nas_s', help='Model size (default: yolo_nas_m)')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
     parser.add_argument('--threshold', '-t', type=float, default=0.5, help='Confidence threshold (default: 0.5)')
     parser.add_argument('--source', '-s', type=str, default='0', 
